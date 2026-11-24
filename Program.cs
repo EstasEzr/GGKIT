@@ -59,7 +59,28 @@ using (var db = new Db(dbPath))
         db.Backup(Path.GetFullPath(destination));
         return;
     }
+    if (args is ["reset-admin-password"])
+    {
+        var resetPassword = builder.Configuration["ResetAdminPassword"];
+        if (string.IsNullOrWhiteSpace(resetPassword) || resetPassword.Length > 256)
+            throw new InvalidOperationException("Задайте ResetAdminPassword длиной от 1 до 256 символов.");
+        var admin = db.One("SELECT * FROM users WHERE login='ADMIN' COLLATE NOCASE AND groupId IS NULL");
+        if (admin is null || !admin.Has("sysadmin"))
+            throw new InvalidOperationException("Учётная запись системного администратора admin не найдена.");
+        db.Write(() =>
+        {
+            var hash = app.Services.GetRequiredService<PasswordHasher<string>>().HashPassword("", resetPassword);
+            db.Run("UPDATE users SET password=$0,active=1,stamp=$1 WHERE id=$2",
+                hash, Guid.NewGuid().ToString(), admin.N("id"));
+            Portal.Audit(db, admin, "account.password-reset-local", admin.N("id"));
+            return 0;
+        });
+        Console.WriteLine("Пароль admin изменён. Прежние сеансы прекращены.");
+        return;
+    }
     var password = builder.Configuration["BootstrapPassword"];
+    if (!string.IsNullOrWhiteSpace(password) && db.One("SELECT id FROM users LIMIT 1") is not null)
+        app.Logger.LogInformation("BootstrapPassword пропущен: база уже содержит пользователей. Для сброса admin используйте reset-admin-password.");
     if (!string.IsNullOrWhiteSpace(password) && db.One("SELECT id FROM users LIMIT 1") is null)
         db.Run("INSERT INTO users(name,login,password,roles) VALUES('Администратор','ADMIN',$0,'sysadmin,admin')",
             app.Services.GetRequiredService<PasswordHasher<string>>().HashPassword("", password));
