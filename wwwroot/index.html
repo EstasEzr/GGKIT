@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f3f7fc">
+  <title>ГГКЭИТ · Портал колледжа</title>
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/vendor/vue.js"></script>
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <div id="app" v-cloak>
+    <header class="masthead">
+      <div class="building" aria-hidden="true"></div>
+      <div class="brand"><span class="seal" aria-hidden="true"></span><div><strong>ГГКЭИТ</strong><small>Колледж электроники и информационных технологий</small></div></div>
+      <div v-if="me" class="account">
+        <div><strong>{{me.name}}</strong><small>{{groupTitle || roleNames[me.roles[0]]}}</small></div>
+        <button class="avatar" aria-label="Меню профиля" :aria-expanded="profile" @click="profile=!profile">{{initials}}</button>
+        <div v-if="profile" class="profile-menu"><button @click="logout">Выйти из аккаунта</button></div>
+      </div>
+    </header>
+    <main v-if="!me" class="login">
+      <form class="panel" @submit.prevent="login">
+        <h1>Вход в портал</h1>
+        <label>Логин<input v-model="credentials.loginName" autocomplete="username" required></label>
+        <label>Пароль<input v-model="credentials.password" type="password" autocomplete="current-password" required></label>
+        <p v-if="error" class="error" role="alert">{{error}}</p>
+        <button class="primary" :disabled="busy">Войти</button>
+      </form>
+    </main>
+    <div v-else class="layout">
+      <aside>
+        <nav aria-label="Разделы портала">
+          <button v-for="item in navigation" :key="item.id" :class="{active:page===item.id}" :aria-current="page===item.id?'page':null" @click="navigate(item.id)">
+            <portal-icon :name="item.icon"></portal-icon><span>{{item.label}}</span>
+          </button>
+        </nav>
+      </aside>
+      <main class="workspace">
+        <p v-if="error" class="error" role="alert">{{error}} <button class="text-button" @click="error=''">Закрыть</button></p>
+        <p v-if="notice" class="notice" role="status">{{notice}}</p>
+        <section v-if="page==='schedule'" class="schedule-page">
+          <div class="page-heading">
+            <div class="title"><portal-icon name="calendar"></portal-icon><div>
+              <h1>Расписание</h1>
+              <p v-if="groupTitle">{{groupTitle}} <span v-if="weekLabel">· {{weekLabel}}</span></p>
+            </div></div>
+            <div class="toggle" aria-label="Вид расписания">
+              <button :class="{active:view==='day'}" :aria-pressed="view==='day'" @click="view='day'">День</button>
+              <button :class="{active:view==='week'}" :aria-pressed="view==='week'" @click="view='week'">Неделя</button>
+            </div>
+          </div>
+          <label v-if="!me.groupId" class="group-select">Группа
+            <select v-model.number="groupId" @change="loadSchedule">
+              <option :value="0">Выберите группу</option><option v-for="g in scheduleGroups" :key="g.id" :value="g.id">{{groupLabel(g)}}</option>
+            </select>
+          </label>
+          <div class="schedule panel" :class="'view-'+view">
+            <div class="schedule-toolbar">
+              <div class="arrows">
+                <button aria-label="Предыдущий период" @click="move(-1)">‹</button>
+                <button aria-label="Следующий период" @click="move(1)">›</button>
+              </div>
+              <details v-if="view==='day'" class="schedule-date">
+                <summary><portal-icon name="calendar"></portal-icon><strong>{{period}}</strong><span aria-hidden="true">⌄</span></summary>
+                <input type="date" aria-label="Дата расписания" :value="selected" @change="if ($event.target.value) { selected=$event.target.value; $event.target.closest('details').open=false; }">
+              </details>
+              <strong v-else>{{period}}</strong>
+              <button class="today" @click="goToday"><portal-icon name="calendar"></portal-icon> Сегодня</button>
+            </div>
+            <div v-if="view==='week'" class="day-picker" aria-label="День недели">
+              <button v-for="date in visibleDays" :key="date" :class="{active:date===selected}" :aria-pressed="date===selected" @click="selected=date">
+                <strong>{{format(date,{weekday:'short'})}}</strong><span>{{format(date,{day:'numeric',month:'short'})}}</span>
+              </button>
+            </div>
+            <table v-if="view==='week'" class="week-grid">
+              <thead><tr><th scope="col">Время</th><th v-for="date in visibleDays" :key="date" :class="{current:date===today}" scope="col">
+                <button class="text-button" @click="selected=date;view='day'">{{format(date,{weekday:'short',day:'numeric',month:'short'})}}</button>
+              </th></tr></thead>
+              <tbody><tr v-for="slot in activeSlots" :key="slot">
+                <th scope="row"><strong>{{bell(slot)[0]}}</strong><small>{{bell(slot)[1]}}</small></th>
+                <td v-for="date in visibleDays" :key="date"><lesson-card v-for="item in dayLessons(date).filter(l=>l.slot===slot)" :key="item.id+'-'+item.subgroup" :item="item"></lesson-card></td>
+              </tr></tbody>
+            </table>
+            <div class="day-list">
+              <div class="day-row" v-for="item in dayLessons(selected)" :key="item.id+'-'+item.subgroup" :class="item.status==='lesson'&&item.changed?'changed':item.status">
+                <div class="time"><strong>{{bell(item.slot)[0]}}</strong><span v-if="bell(item.slot)[1]"> – {{bell(item.slot)[1]}}</span></div>
+                <lesson-card :item="item"></lesson-card>
+              </div>
+              <p v-if="activeSlots.length && !dayLessons(selected).length" class="empty">На этот день занятий нет.</p>
+            </div>
+            <p v-if="!activeSlots.length" class="empty">{{groupId ? 'На этот период занятий нет.' : 'Выберите группу, чтобы увидеть расписание.'}}</p>
+          </div>
+          <p class="updated"><portal-icon name="clock"></portal-icon><span v-if="schedule.updated">Обновлено {{timestamp(schedule.updated)}} · </span>Минское время</p>
+        </section>
+
+        <section v-if="page==='news'" class="news-page">
+          <a v-if="newsId" href="#news" class="news-back"><span aria-hidden="true">←</span> Все новости</a>
+          <div v-else class="page-heading news-heading">
+            <h1>Новости</h1>
+            <button v-if="can('admin','curator')" class="primary" @click="editPost()">Создать новость</button>
+          </div>
+          <dialog ref="newsDialog" class="subject-dialog news-dialog" aria-labelledby="news-editor-title" @close="postForm=null">
+          <form v-if="postForm" class="form" @submit.prevent="savePost">
+            <h2 id="news-editor-title">{{postForm.id?'Редактирование новости':'Новая новость'}}</h2>
+            <label>Заголовок<input v-model="postForm.title" required></label>
+            <label>Тема<input v-model="postForm.topic" list="topics" required><datalist id="topics"><option v-for="topic in topics" :key="topic">{{topic}}</option></datalist></label>
+            <label>Текст<textarea v-model="postForm.body" required></textarea></label>
+            <label>Аудитория<select v-model="postForm.audience"><option v-if="can('admin')" value="all">Весь колледж</option><option value="groups">Выбранные группы</option><option v-if="can('admin')" value="roles">Выбранные роли</option></select></label>
+            <group-picker v-if="postForm.audience==='groups'" v-model="postForm.groups" :groups="postGroups"></group-picker>
+            <label v-if="postForm.audience==='roles'">Роли<select multiple v-model="postForm.roles" required><option v-for="(label,role) in roleNames" :key="role" :value="role">{{label}}</option></select></label>
+            <label>Ссылка<input v-model="postForm.url" type="url"></label><label>Вложение<input type="file" name="file"></label>
+            <label v-if="postForm.filename" class="check"><input type="checkbox" v-model="postForm.removeFile"> Удалить вложение «{{postForm.filename}}»</label>
+            <p v-if="error" class="error" role="alert">{{error}}</p>
+            <div class="actions"><button class="primary" type="submit" value="publish" :disabled="savingPost">Опубликовать</button><button type="submit" value="draft" :disabled="savingPost">Сохранить черновик</button><button type="button" @click="$refs.newsDialog.close()" :disabled="savingPost">Закрыть</button></div>
+          </form>
+          </dialog>
+          <div v-if="!newsId" class="news-tools">
+            <label>Поиск новостей<input type="search" v-model="newsSearch" placeholder="Заголовок, текст или автор"></label>
+            <label v-if="can('admin','curator')">Показать<select v-model="newsStatus"><option value="published">Опубликованные</option><option value="drafts">Мои черновики</option></select></label>
+          </div>
+          <div v-if="!newsId && newsTopics.length" class="news-topics" role="group" aria-label="Темы новостей">
+            <button :class="{active:!topicFilter}" :aria-pressed="!topicFilter" @click="topicFilter=''">Все темы</button>
+            <button v-for="topic in newsTopics" :key="topic" :class="{active:topicFilter===topic}" :aria-pressed="topicFilter===topic" @click="topicFilter=topic">{{topic}}</button>
+          </div>
+          <div class="news-feed" :class="{'news-feed-detail':newsId}">
+            <article v-for="post in newsId?posts:filteredPosts.slice(0,newsLimit)" :key="post.id" class="news-card"
+              :class="{'news-draft':!post.published}">
+              <header class="social-post-header">
+                <span class="contact-avatar" aria-hidden="true">{{contactInitials(post.authorName||'Колледж')}}</span>
+                <div class="social-author"><strong>{{post.authorName||'Колледж'}}</strong><small>
+                  <time v-if="post.published" :datetime="post.published">{{timestamp(post.published)}}</time>
+                  <span v-else>Черновик</span> · {{post.topic}}
+                </small></div>
+                <details v-if="post.author===me.id&&can('curator','admin')||post.published&&can('admin')" class="post-menu">
+                  <summary aria-label="Действия с публикацией">···</summary>
+                  <div>
+                    <button v-if="post.author===me.id&&can('curator','admin')" @click="editPost(post.id);$event.target.closest('details').open=false">Редактировать</button>
+                    <button v-if="post.published&&(post.author===me.id||can('admin'))" @click="unpublishPost(post.id)">Снять с публикации</button>
+                  </div>
+                </details>
+              </header>
+              <h1 v-if="newsId">{{post.title}}</h1>
+              <h2 v-else><a :href="'#news/'+post.id">{{post.title}}</a></h2>
+              <img v-if="post.mediaType?.startsWith('image/')" class="news-media"
+                :src="'/api/posts/'+post.id+'/media'" :alt="'Фото к новости «'+post.title+'»'" loading="lazy">
+              <video v-else-if="post.mediaType?.startsWith('video/')" class="news-media"
+                :src="'/api/posts/'+post.id+'/media'" :aria-label="'Видео к новости «'+post.title+'»'"
+                controls playsinline preload="none">
+                <a :href="'/api/posts/'+post.id+'/file'">Скачать видео</a>
+              </video>
+              <p class="body-text news-body">{{post.body}}</p>
+              <div class="news-card-actions">
+                <a v-if="!newsId" :href="'#news/'+post.id" class="news-read">Открыть публикацию</a>
+                <a v-if="post.url" :href="post.url" rel="noopener noreferrer" target="_blank" class="news-read"><portal-icon name="link"></portal-icon> Открыть ссылку</a>
+                <a v-if="post.filename" :href="'/api/posts/'+post.id+'/file'" class="news-read"><portal-icon name="file"></portal-icon> {{post.filename}}</a>
+                <button class="news-share" @click="copyPostLink(post.id)">Копировать ссылку</button>
+              </div>
+            </article>
+          </div>
+          <div v-if="!newsId&&filteredPosts.length>newsLimit" class="news-more"><button @click="newsLimit+=10">Показать ещё</button></div>
+          <p v-if="!newsId&&!filteredPosts.length&&!error" class="empty panel">{{newsSearch.trim()||topicFilter?'По заданным условиям ничего не найдено.':newsStatus==='drafts'?'У вас пока нет черновиков.':'Новостей пока нет.'}}
+            <button v-if="newsSearch.trim()||topicFilter" class="text-button" @click="newsSearch='';topicFilter=''">Сбросить поиск и тему</button>
+          </p>
+        </section>
+
+        <section v-if="page==='subjects' && can('student')" class="student-subjects">
+          <template v-if="!studentSubjectId">
+            <div class="page-heading"><h1>Мои предметы</h1></div>
+            <div v-if="subjects.length" class="student-subject-grid">
+              <a v-for="subject in subjects" :key="subject.id" :href="'#subjects/'+subject.id" class="panel student-subject-card">
+                <span class="learning-icon"><portal-icon name="book"></portal-icon></span>
+                <span class="learning-copy"><strong>{{subject.title}}</strong><small>{{subject.teacher}}</small></span>
+                <span class="subject-arrow" aria-hidden="true">›</span>
+              </a>
+            </div>
+            <p v-else class="empty panel">Для вашей группы пока нет доступных предметов.</p>
+          </template>
+          <template v-else>
+            <a href="#subjects" class="back-to-subjects"><span aria-hidden="true">←</span> Мои предметы</a>
+            <template v-if="subjectDetail">
+              <header class="student-subject-heading">
+                <span class="learning-icon"><portal-icon name="book"></portal-icon></span>
+                <div><h1>{{subjectDetail.subject.title}}</h1><p>{{subjectDetail.teacher}}</p></div>
+              </header>
+              <h2>Учебные материалы</h2>
+              <ol v-if="subjectDetail.materials.length" class="student-materials">
+                <li v-for="material in subjectDetail.materials" :key="material.id" class="panel student-material">
+                  <span class="learning-icon"><portal-icon :name="material.filename?'file':'link'"></portal-icon></span>
+                  <div class="learning-copy">
+                    <h3>{{material.title}}</h3>
+                    <small>{{material.filename || 'Ссылка'}}</small>
+                  </div>
+                  <div class="material-links">
+                    <a v-if="material.filename" :href="'/api/materials/'+material.id+'/file'" class="material-link">Скачать файл</a>
+                    <a v-if="material.url" :href="material.url" rel="noopener noreferrer" target="_blank" class="material-link">Открыть ссылку <span aria-hidden="true">↗</span></a>
+                  </div>
+                </li>
+              </ol>
+              <p v-else class="empty panel">Для вашей группы пока нет материалов по этому предмету.</p>
+            </template>
+            <p v-else-if="!error" class="muted" role="status">Загрузка предмета…</p>
+          </template>
+        </section>
+
+        <section v-if="page==='subjects' && !can('student')">
+          <div class="page-heading"><h1>Мои предметы</h1><button v-if="can('teacher')" class="primary" @click="editSubject()">Добавить предмет</button></div>
+          <div class="cards">
+            <button class="panel list-button" v-for="item in subjects" :key="item.id" @click="openSubject(item.id)"><strong>{{item.title}}</strong><small>{{item.teacher}}</small></button>
+          </div>
+          <p v-if="!subjects.length&&!subjectForm" class="empty panel">Предметов пока нет.</p>
+          <article v-if="subjectDetail" class="panel article">
+            <div class="subheading">
+              <h2>{{subjectDetail.subject.title}}</h2>
+              <div v-if="ownSubject" class="actions">
+                <button @click="editSubject(subjectDetail)">Настроить доступ к предмету</button>
+                <button class="primary" @click="openMaterialDialog">Добавить материал</button>
+              </div>
+            </div>
+            <h3>Материалы</h3>
+            <ol v-if="subjectDetail.materials.length" class="entries materials-list">
+              <li v-for="(m,index) in subjectDetail.materials" :key="m.id">
+                <div class="material-name">
+                  <strong>{{m.title}}</strong>
+                  <a v-if="m.url" :href="m.url" rel="noopener noreferrer" target="_blank">Открыть ссылку</a>
+                  <a v-if="m.filename" :href="'/api/materials/'+m.id+'/file'">{{m.filename}}</a>
+                </div>
+                <div v-if="ownSubject" class="actions">
+                  <button :disabled="movingMaterial || index===0" :aria-label="'Переместить вверх: '+m.title" @click="moveMaterial(m.id,-1)">↑</button>
+                  <button :disabled="movingMaterial || index===subjectDetail.materials.length-1" :aria-label="'Переместить вниз: '+m.title" @click="moveMaterial(m.id,1)">↓</button>
+                  <button :aria-label="'Доступ к материалу: '+m.title" @click="editMaterialAccess(m)">Доступ</button>
+                  <button :aria-label="'Удалить материал: '+m.title" @click="deleteMaterial(m.id)">Удалить</button>
+                </div>
+              </li>
+            </ol>
+            <p v-else class="muted">Материалов пока нет.</p>
+          </article>
+
+          <dialog ref="subjectDialog" class="subject-dialog" aria-labelledby="subject-dialog-title" @close="subjectForm=null">
+            <form v-if="subjectForm" class="form" @submit.prevent="saveSubject">
+              <h2 id="subject-dialog-title">{{subjectForm.id?'Настройки предмета':'Новый предмет'}}</h2>
+              <label>Название<input v-model="subjectForm.title" required></label>
+              <group-picker v-model="subjectForm.groups" :groups="groups"></group-picker>
+              <p v-if="error" class="error" role="alert">{{error}}</p>
+              <div class="actions"><button class="primary">Сохранить</button><button type="button" @click="$refs.subjectDialog.close()">Закрыть</button></div>
+            </form>
+          </dialog>
+
+          <dialog ref="materialAccessDialog" class="subject-dialog" aria-labelledby="access-dialog-title" @close="materialAccess=null">
+            <form v-if="materialAccess" class="form" @submit.prevent="saveMaterialAccess">
+              <h2 id="access-dialog-title">Доступ к материалу «{{materialAccess.title}}»</h2>
+              <label class="check"><input type="checkbox" v-model="materialAccess.restricted"> Только выбранные группы</label>
+              <group-picker v-if="materialAccess.restricted" v-model="materialAccess.groups" :groups="subjectGroups"></group-picker>
+              <p v-else class="muted">Доступен всем группам предмета.</p>
+              <p v-if="error" class="error" role="alert">{{error}}</p>
+              <div class="actions"><button class="primary">Сохранить доступ</button><button type="button" @click="$refs.materialAccessDialog.close()">Закрыть</button></div>
+            </form>
+          </dialog>
+
+          <dialog ref="materialDialog" class="subject-dialog" aria-labelledby="material-dialog-title">
+            <form class="form" @submit.prevent="addMaterial">
+              <h2 id="material-dialog-title">Добавить материал</h2>
+              <label>Название материала<input name="title" required></label>
+              <label>Ссылка<input name="url" type="url"></label>
+              <label>Файл<input name="file" type="file"></label>
+              <label class="check"><input type="checkbox" v-model="newMaterialAccess.restricted"> Только выбранные группы</label>
+              <group-picker v-if="newMaterialAccess.restricted" v-model="newMaterialAccess.groups" :groups="subjectGroups"></group-picker>
+              <p v-else class="muted">Доступен всем группам предмета.</p>
+              <p v-if="error" class="error" role="alert">{{error}}</p>
+              <div class="actions"><button class="primary">Добавить материал</button><button type="button" @click="$refs.materialDialog.close()">Закрыть</button></div>
+            </form>
+          </dialog>
+        </section>
+
+        <section v-if="page==='chat'" class="chat-page">
+          <div class="page-heading"><h1>Рабочий чат</h1></div>
+          <div class="messenger" :class="{'has-peer':peer}">
+            <div class="chat-contacts">
+              <label class="contact-search">Сотрудники<input type="search" v-model="chatSearch" placeholder="Поиск по имени"></label>
+              <div class="contact-list" aria-label="Собеседники">
+                <button v-for="person in chatContacts" :key="person.id" class="contact-button" :class="{selected:peer===person.id}"
+                  :aria-pressed="peer===person.id" :disabled="sendingMessage" @click="selectChat(person.id)">
+                  <span class="contact-avatar" aria-hidden="true">{{contactInitials(person.name)}}</span>
+                  <span class="contact-copy"><strong>{{person.name}}</strong><small>{{person.roles.split(',').filter(role=>role!=='academic').map(role=>roleNames[role]).join(', ')}}</small></span>
+                </button>
+                <p v-if="!chatContacts.length" class="empty">Сотрудники не найдены.</p>
+              </div>
+            </div>
+            <div v-if="peer" class="chat-conversation">
+              <header class="chat-header">
+                <button class="chat-back" aria-label="К списку сотрудников" :disabled="sendingMessage" @click="selectChat(0)">←</button>
+                <span class="contact-avatar" aria-hidden="true">{{contactInitials(chatPeer?.name||'')}}</span>
+                <strong>{{chatPeer?.name}}</strong>
+                <button class="chat-refresh" @click="refreshChat" aria-label="Обновить переписку">Обновить</button>
+              </header>
+              <div class="chat-timeline" ref="chatMessages" aria-label="Переписка">
+                <p v-if="chatLoading" class="empty" role="status">Загрузка переписки…</p>
+                <p v-else-if="!messages.length" class="empty">Сообщений пока нет. Напишите первым.</p>
+                <template v-for="(m,index) in messages" :key="m.id">
+                  <div v-if="index===0||chatDay(messages[index-1].created)!==chatDay(m.created)" class="chat-date">{{chatDay(m.created)}}</div>
+                  <article class="chat-bubble" :class="{outgoing:m.author===me.id,'task-bubble':m.status}">
+                    <div v-if="m.status" class="task-heading"><strong>Поручение</strong><span :class="{'task-done':m.status==='Выполнено'}">{{m.status}}</span></div>
+                    <p class="body-text">{{m.body}}</p>
+                    <template v-if="m.status">
+                      <p class="task-deadline">Срок {{format(m.deadline,{day:'numeric',month:'long',year:'numeric'})}}</p>
+                      <div v-if="m.recipient===me.id" class="actions">
+                        <button v-for="status in ['В работе','Выполнено']" :key="status" :disabled="m.status===status" @click="taskStatus(m.id,status)">{{status}}</button>
+                      </div>
+                      <details class="task-history"><summary>История статусов</summary><ul><li v-for="(h,index) in m.history" :key="index">{{h.status}} · {{timestamp(h.created)}}</li></ul></details>
+                    </template>
+                    <time class="message-time" :datetime="m.created" :title="timestamp(m.created)">{{chatTime(m.created)}}</time>
+                  </article>
+                </template>
+              </div>
+              <form class="chat-compose" @submit.prevent="sendMessage">
+                <div v-if="canTask" class="compose-options">
+                  <label class="check"><input type="checkbox" v-model="task" :disabled="sendingMessage"> Поручение</label>
+                  <label v-if="task">Срок<input type="date" v-model="deadline" required :disabled="sendingMessage"></label>
+                </div>
+                <div class="compose-line">
+                  <textarea ref="chatInput" v-model="message" :aria-label="task&&canTask?'Описание поручения':'Сообщение'" :placeholder="task&&canTask?'Описание поручения':'Написать сообщение…'" rows="2" maxlength="4000" required :disabled="sendingMessage" @keydown="chatKeydown"></textarea>
+                  <button class="primary" :disabled="sendingMessage||!message.trim()">{{sendingMessage?'Отправка…':task&&canTask?'Назначить':'Отправить'}}</button>
+                </div>
+                <small class="compose-hint">Enter — отправить · Shift + Enter — новая строка</small>
+              </form>
+            </div>
+            <div v-else class="chat-welcome"><portal-icon name="chat"></portal-icon><p>Выберите сотрудника, чтобы открыть переписку.</p></div>
+          </div>
+        </section>
+        <section v-if="page==='groups'">
+          <div class="page-heading"><h1>Учебные группы</h1><button v-if="can('curator')" class="primary" @click="editGroup()">Создать группу</button></div>
+          <div v-if="can('curator')" class="group-switch actions" role="group" aria-label="Разделы учебных групп">
+            <button :class="{active:groupView==='mine'}" :aria-pressed="groupView==='mine'" @click="showGroupView('mine')">Мои группы ({{myGroups.length}})</button>
+            <button :class="{active:groupView==='directory'}" :aria-pressed="groupView==='directory'" @click="showGroupView('directory')">{{can('admin')?'Назначение кураторов':'Свободные группы'}}</button>
+          </div>
+          <label v-if="groupView==='mine'&&myGroups.length" class="group-select">Моя группа
+            <select :value="managedId" @change="openGroup(Number($event.target.value))">
+              <option v-for="g in myGroups" :key="g.id" :value="g.id">{{groupLabel(g)}}</option>
+            </select>
+          </label>
+          <p v-if="groupView==='mine'&&!myGroups.length&&!groupForm" class="empty panel">У вас пока нет групп. Выберите группу на вкладке «{{can('admin')?'Назначение кураторов':'Свободные группы'}}» или создайте новую.</p>
+          <div v-if="groupView==='directory'" class="panel article">
+            <h2>{{can('admin')?'Назначение кураторов':'Свободные группы'}}</h2>
+            <label class="group-select">Поиск группы<input type="search" v-model="groupSearch" placeholder="Номер, уровень или год"></label>
+            <p v-if="!directoryGroups.length" class="muted">{{groupSearch.trim()?'Группы по запросу не найдены.':'Нет групп для назначения.'}}</p>
+            <ul class="entries group-directory">
+              <li v-for="g in directoryGroups" :key="g.id">
+                <strong>{{groupLabel(g)}}</strong>
+                <template v-if="can('admin')">
+                  <select v-model.number="curatorChoices[g.id]" :aria-label="'Куратор группы '+groupLabel(g)">
+                    <option :value="0" disabled>Без куратора</option>
+                    <option v-for="s in activeCurators" :key="s.id" :value="s.id">{{s.name}}</option>
+                  </select>
+                  <button :disabled="!curatorChoices[g.id]||curatorChoices[g.id]===g.curatorId" @click="assignCurator(g,curatorChoices[g.id])">{{g.available?'Назначить':'Переназначить'}}</button>
+                </template>
+                <button v-else @click="assignCurator(g,null)">Закрепить за собой</button>
+              </li>
+            </ul>
+          </div>
+          <form v-if="groupForm" class="panel form" @submit.prevent="saveGroup">
+            <h2>{{groupForm.id?'Настройки группы':'Новая группа'}}</h2>
+            <label>Номер<input v-model="groupForm.number" required></label>
+            <label>Уровень<select v-model="groupForm.level"><option>ПТО</option><option>ССО</option></select></label>
+            <label>Год набора<input type="number" v-model.number="groupForm.year" min="1900" max="2200" required></label>
+            <label v-if="groupConflict" class="check"><input type="checkbox" v-model="groupForm.confirm"> Сохранить одноимённую группу</label>
+            <div class="actions"><button class="primary">Сохранить</button><button type="button" @click="groupForm=null">Закрыть</button></div>
+          </form>
+          <div v-if="groupView==='mine'&&managedGroup" class="panel article">
+            <div class="subheading"><h2>{{groupLabel(managedGroup)}}</h2><div class="actions"><button @click="editGroup(managedGroup)">Изменить группу</button><button class="primary" @click="editStudent()">Добавить учащегося</button></div></div>
+
+            <form v-if="studentForm" class="form inset" @submit.prevent="saveStudent">
+              <h3>{{studentForm.id?'Карточка учащегося':'Новый учащийся'}}</h3>
+              <label>ФИО<input v-model="studentForm.name" required></label>
+              <label>Номер зачётной книжки<input v-model="studentForm.book" required></label>
+              <label>Подгруппа<select v-model="studentForm.subgroup"><option :value="null">Не назначена</option><option :value="1">1 пг</option><option :value="2">2 пг</option></select></label>
+              <label v-if="studentForm.id">Новый пароль<input v-model="studentForm.password" type="password" autocomplete="new-password"></label>
+              <div class="actions"><button class="primary">Сохранить</button><button type="button" @click="studentForm=null">Закрыть</button></div>
+            </form>
+            <label v-if="students.length" class="group-select">Поиск учащегося<input type="search" v-model="studentSearch" placeholder="ФИО или номер зачётной книжки"></label>
+            <ul v-if="visibleStudents.length" class="entries group-directory">
+              <li v-for="s in visibleStudents" :key="s.id">
+                <div><strong>{{s.name}}</strong><small>Зачётная книжка {{s.book}} <span v-if="s.subgroup">· {{s.subgroup}} пг</span></small></div>
+                <div class="actions"><button @click="editStudent(s)">Редактировать</button><button @click="deactivate(s)">Деактивировать</button></div>
+              </li>
+            </ul>
+            <p v-else class="muted">{{students.length?'Учащиеся по запросу не найдены.':'В группе пока нет учащихся.'}}</p>
+          </div>
+        </section>
+
+        <section v-if="page==='staff'" class="staff-page">
+          <div class="page-heading"><h1>Сотрудники</h1><button class="primary" @click="editStaff()">Добавить сотрудника</button></div>
+          <div class="admin-filters">
+            <label>Поиск сотрудника<input v-model="staffSearch" type="search" placeholder="ФИО или логин"></label>
+            <label>Роль<select v-model="staffRole"><option value="">Все роли</option><option v-for="[role,label] in assignableRoles" :key="role" :value="role">{{label}}</option></select></label>
+            <label>Статус<select v-model="staffStatus"><option value="active">Активные</option><option value="inactive">Деактивированные</option><option value="all">Все сотрудники</option></select></label>
+          </div>
+          <ul class="staff-directory">
+            <li v-for="s in filteredStaff" :key="s.id">
+              <span class="contact-avatar" aria-hidden="true">{{contactInitials(s.name)}}</span>
+              <div class="staff-summary"><strong>{{s.name}}</strong><small>{{s.login}} · {{s.active?'Активен':'Деактивирован'}}</small><span>{{s.roles.split(',').map(r=>roleNames[r]).join(', ')}}</span></div>
+              <button @click="editStaff(s)" :aria-label="'Изменить сотрудника '+s.name">Изменить</button>
+            </li>
+          </ul>
+          <p v-if="!filteredStaff.length" class="empty panel">Сотрудники по заданным условиям не найдены.</p>
+          <dialog ref="staffDialog" class="subject-dialog" aria-labelledby="staff-dialog-title" @close="staffForm=null">
+          <form v-if="staffForm" class="form" @submit.prevent="saveStaff">
+            <h2 id="staff-dialog-title">{{staffForm.id?'Учётная запись':'Новый сотрудник'}}</h2>
+            <label>ФИО<input v-model="staffForm.name" required></label><label>Логин<input v-model="staffForm.login" required></label>
+            <label>Пароль<input v-model="staffForm.password" type="password" autocomplete="new-password" :required="!staffForm.id"></label>
+            <fieldset class="staff-roles">
+              <legend>Роли</legend>
+              <label v-for="[role,label] in assignableRoles" :key="role" class="check">
+                <input type="checkbox" :value="role" v-model="staffForm.roles">{{label}}
+              </label>
+            </fieldset>
+
+            <label class="check"><input type="checkbox" v-model="staffForm.active"> Учётная запись активна</label>
+            <div class="actions"><button class="primary">Сохранить</button><button type="button" @click="$refs.staffDialog.close()">Закрыть</button></div>
+            <p v-if="error" class="error" role="alert">{{error}}</p>
+          </form>
+          </dialog>
+        </section>
+
+        <section v-if="page==='imports'" class="imports-page">
+          <div class="page-heading"><h1>Публикация расписания</h1><button v-if="can('admin')&&importTab!=='upload'" class="primary" @click="importTab='upload'">Загрузить файл</button></div>
+          <div class="admin-tabs" role="group" aria-label="Работа с расписанием">
+            <button :class="{active:importTab==='packages'}" :aria-pressed="importTab==='packages'" @click="importTab='packages'">Пакеты расписания</button>
+            <button v-if="can('admin')" :class="{active:importTab==='upload'}" :aria-pressed="importTab==='upload'" @click="importTab='upload'">Загрузка и замены</button>
+            <button :class="{active:importTab==='calendar'}" :aria-pressed="importTab==='calendar'" @click="importTab='calendar'">Календарь недель</button>
+          </div>
+          <form v-if="importTab==='calendar'&&can('admin','academic')" class="panel form" @submit.prevent="saveCalendar">
+            <h2>Чередование недель</h2>
+            <div class="actions"><label>Опорная дата<input type="date" v-model="calendar.anchor" required></label><label>Тип опорной недели
+              <select v-model.number="calendar.week"><option :value="1">Над чертой</option><option :value="2">Под чертой</option></select></label></div>
+            <button class="primary">Сохранить календарь</button>
+          </form>
+          <template v-if="importTab==='upload'&&can('admin')">
+            <div class="import-forms">
+              <form class="panel form" @submit.prevent="uploadPackage">
+                <h2>Импорт файла</h2>
+                <label>Файл расписания XLSX или замен DOCX<input name="file" type="file" accept=".xlsx,.docx" required></label>
+
+                <button class="primary" :disabled="busy">Загрузить и проверить</button>
+              </form>
+              <form class="panel form" @submit.prevent="manualPackage"><h2>Ручная замена</h2><label>Дата<input type="date" v-model="manualDate" required></label><button>Открыть черновик</button></form>
+            </div>
+            </template>
+          <template v-if="importTab==='packages'&&can('admin','academic')">
+            <div v-if="!preview" class="package-browser">
+              <label class="group-select">Тип пакета<select v-model="packageKind"><option value="">Все пакеты</option><option value="base">Базовое расписание</option><option value="changes">Замены</option></select></label>
+              <ul class="package-list">
+                <li v-for="p in filteredPackages" :key="p.id">
+                  <div><strong>{{p.kind==='base'?'ПТО и ССО':'Замены на '+format(p.starts,{day:'numeric',month:'long',year:'numeric'})}}</strong><small>Пакет №{{p.id}} · {{p.published?'Опубликован':p.updated?'Архив':'Черновик'}}</small></div>
+                  <div class="actions">
+                    <button @click="packageId=p.id;loadPackage()">Открыть</button>
+                    <button v-if="can('admin')" @click="editPackage(p.id)">Изменить</button>
+                    <button v-if="can('admin')" @click="deletePackage(p)">Удалить</button>
+                  </div>
+                </li>
+              </ul>
+              <p v-if="!filteredPackages.length" class="empty panel">Пакетов пока нет. Загрузите файл расписания или создайте ручную замену.</p>
+            </div>
+            <button v-if="preview" class="package-back" @click="preview=null;packageId=0;lessonForm=null">← Все пакеты</button>
+            <div v-if="preview" class="panel article">
+              <div class="subheading"><div><h2>{{preview.package.kind==='base'?'Базовое расписание':'Замены на '+preview.package.starts}}</h2><small>Пакет №{{preview.package.id}} · {{preview.package.published?'Опубликован':'Черновик'}} · записей {{preview.rows.length}}</small></div><div class="actions">
+                <button v-if="can('admin')&&preview.package.published" @click="editPackage(preview.package.id)">Изменить пакет</button>
+                <button v-if="can('admin')" @click="deletePackage(preview.package)">Удалить пакет</button>
+                <button v-if="can('admin')&&!preview.package.published" class="primary" @click="publish(true)">Опубликовать пакет</button>
+                <button v-if="can('admin')&&preview.package.published" @click="publish(false)">Снять с публикации</button></div></div>
+              <button v-if="previewProblemCount" class="review-problems" @click="errorsOnly=true;previewSearch=''">Требуют проверки {{previewProblemCount}} записей</button>
+              <p v-else class="review-ready">Ошибок и конфликтов в записях нет.</p>
+              <p v-if="preview.package.kind==='changes'" class="muted">Неделя по календарю: {{weeks[preview.week]}}. В файле: {{weeks[preview.package.week]}}.</p>
+              <p v-if="weekMismatch" class="muted">Тип недели в DOCX отличается от календаря. Замены применяются на указанную в файле дату.</p>
+              <details v-if="preview.warnings?.length" open>
+                <summary>Предупреждения импорта ({{preview.warnings.length}})</summary>
+                <ul><li v-for="(warning,index) in preview.warnings" :key="index">{{warning}}</li></ul>
+              </details>
+              <details v-if="!preview.package.published"><summary>Изменения при публикации · добавится {{preview.differences.added.length}}, изменится {{preview.differences.changed.length}}, исчезнет {{preview.differences.removed.length}}</summary>
+                <p v-for="(items,key) in preview.differences" :key="key" v-show="items.length"><strong>{{diffLabels[key]}}</strong><br>
+                  <span v-for="r in items" :key="r.id" class="diff-line">{{r.groupNumber}} · {{weekdays[r.day]}} · {{r.slot || 'Весь день'}} · {{r.subject}} {{r.teacher}} {{r.room}}<br></span></p>
+              </details>
+              <div v-if="can('admin')&&unmapped.length&&!preview.package.published" class="mappings">
+                <h3>Сопоставление групп</h3><div class="mapping" v-for="r in unmapped" :key="r.level+r.groupNumber">
+                  <strong>{{r.groupNumber}} {{r.level}}</strong><select aria-label="Группа для сопоставления" :value="0" @change="mapGroup(r,$event.target.value)">
+                    <option value="0">Выберите группу</option><option v-for="g in groups.filter(g=>!r.level||g.level===r.level)" :key="g.id" :value="g.id">{{groupLabel(g)}}</option></select>
+                </div>
+              </div>
+              <div class="actions preview-tools">
+                <label>Поиск по группе или предмету<input v-model="previewSearch" type="search"></label>
+                <label class="check"><input type="checkbox" v-model="errorsOnly"> Только спорные записи</label>
+                <button v-if="can('admin')&&!preview.package.published" @click="editLesson()">Добавить запись</button>
+              </div>
+              <dialog ref="lessonDialog" class="subject-dialog" aria-labelledby="lesson-dialog-title" @close="lessonForm=null">
+              <form v-if="lessonForm" class="form" @submit.prevent="saveLesson">
+                <h2 id="lesson-dialog-title">{{lessonForm.source || 'Новая запись'}}</h2>
+                <label>Группа<select v-model.number="lessonForm.groupId" required><option :value="0" disabled>Выберите группу</option><option v-for="g in groups" :key="g.id" :value="g.id">{{groupLabel(g)}}</option></select></label>
+                <div class="actions">
+                  <label v-if="preview.package.kind==='base'">День<select v-model.number="lessonForm.day"><option v-for="(day,i) in weekdays.slice(1)" :key="day" :value="i+1">{{day}}</option></select></label>
+                  <label>Тип записи<select v-model="lessonForm.status" @change="lessonForm.slot=lessonForm.status==='practice'?0:Math.max(lessonForm.slot,1)">
+                    <option value="lesson">Занятие</option><option value="cancel">Отмена</option><option value="practice">Практика на весь день</option></select></label>
+                  <label v-if="lessonForm.status!=='practice'">Номер урока<input type="number" v-model.number="lessonForm.slot" min="1" max="24" required></label>
+                  <label>Подгруппа<select v-model.number="lessonForm.subgroup"><option :value="0">Вся группа</option><option :value="1">1 пг</option><option :value="2">2 пг</option></select></label>
+                  <label v-if="preview.package.kind==='base'">Неделя<select v-model.number="lessonForm.week"><option :value="0">Каждую неделю</option><option :value="1">Над чертой</option><option :value="2">Под чертой</option></select></label>
+                </div>
+                <label>Предмет или примечание<input v-model="lessonForm.subject" required></label><label>Преподаватель<input v-model="lessonForm.teacher"></label><label>Кабинет<input v-model="lessonForm.room"></label>
+                <div class="actions"><button class="primary">Сохранить запись</button><button type="button" @click="$refs.lessonDialog.close()">Закрыть</button></div>
+                <p v-if="error" class="error" role="alert">{{error}}</p>
+              </form>
+              </dialog>
+              <div class="table-scroll"><table class="review"><thead><tr><th>Источник</th><th>Группа</th><th>Урок</th><th>Запись</th><th>Проверка</th><th></th></tr></thead>
+                <tbody><tr v-for="r in previewRows.slice((reviewPage-1)*40,reviewPage*40)" :key="r.id">
+                  <td>{{r.source}}</td><td>{{r.groupNumber}} {{r.level}}</td><td>{{weekdays[r.day]}} · {{r.slot||'Весь день'}}<small v-if="r.subgroup">{{r.subgroup}} пг</small><small v-if="r.week">{{weeks[r.week]}}</small></td>
+                  <td><strong>{{r.subject}}</strong><small>{{r.teacher}} {{r.room}}</small></td>
+                  <td class="review-issue">{{r.issue}} <small v-if="!r.groupId">Нужно выбрать группу</small>                    <details v-if="preview.conflicts[r.id]">
+                      <summary>Конфликтующие записи ({{preview.conflicts[r.id].length}})</summary>
+                      <ul>
+                        <li v-for="peerId in preview.conflicts[r.id]" :key="peerId">
+                          <template v-if="reviewById.get(peerId)">
+                            <strong>{{reviewById.get(peerId).subject || 'Предмет не указан'}}</strong>
+                            <small>{{reviewById.get(peerId).source}} · {{reviewById.get(peerId).slot || 'Весь день'}} · {{reviewById.get(peerId).subgroup ? reviewById.get(peerId).subgroup+' пг' : 'Вся группа'}} · {{reviewById.get(peerId).week ? weeks[reviewById.get(peerId).week] : 'Каждую неделю'}}</small>
+                            <small>{{reviewById.get(peerId).teacher}} {{reviewById.get(peerId).room}}</small>
+                            <button v-if="can('admin')&&!preview.package.published" @click="editLesson(reviewById.get(peerId))">Изменить конфликтующую запись</button>
+                          </template>
+                        </li>
+                      </ul>
+                    </details></td>
+                  <td v-if="!preview.package.published">
+                    <select v-if="can('admin','academic')&&preview.package.kind==='base'" :value="r.week" aria-label="Тип недели для записи" @change="setLessonWeek(r,$event.target.value)">
+                      <option :value="0">Каждую неделю</option><option :value="1">Над чертой</option><option :value="2">Под чертой</option>
+                    </select>
+                    <template v-if="can('admin')"><button @click="editLesson(r)" aria-label="Изменить запись">Изменить</button><button @click="removeLesson(r)" aria-label="Удалить запись">Удалить</button></template>
+                  </td>
+                </tr></tbody></table></div>
+              <div class="actions pages"><button :disabled="reviewPage<=1" @click="reviewPage--">Назад</button><span>Страница {{reviewPage}} из {{reviewPages}} · записей {{previewRows.length}}</span><button :disabled="reviewPage>=reviewPages" @click="reviewPage++">Далее</button></div>
+            </div>
+          </template>
+        </section>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

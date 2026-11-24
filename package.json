@@ -1,0 +1,1 @@
+{"private":true,"scripts":{"vendor":"node -e \"const f=require('fs');f.mkdirSync('wwwroot/vendor',{recursive:true});f.copyFileSync('node_modules/vue/dist/vue.global.prod.js','wwwroot/vendor/vue.js')\""},"dependencies":{"vue":"3.5.13"}}
